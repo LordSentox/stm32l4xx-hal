@@ -45,6 +45,19 @@ mod common_pins {
     }
 }
 
+#[cfg(feature = "stm32l496")]
+mod can2_pins {
+    use crate::gpio::{
+        gpiob::{PB12, PB13, PB5, PB6},
+        PushPull,
+    };
+    use crate::pac::CAN2;
+    pins! {
+        CAN2 => (PB6<8>, PB5<3>),
+        CAN2 => (PB13<10>, PB12<10>),
+    }
+}
+
 #[cfg(feature = "stm32l4x1")]
 mod pb13_pb12_af10 {
     use crate::gpio::{
@@ -56,6 +69,9 @@ mod pb13_pb12_af10 {
 }
 
 impl crate::can::sealed::Sealed for crate::pac::CAN1 {}
+
+#[cfg(feature = "stm32l496")]
+impl crate::can::sealed::Sealed for crate::pac::CAN2 {}
 
 /// Interface to the CAN peripheral.
 pub struct Can<CAN, Pins> {
@@ -90,3 +106,16 @@ unsafe impl<Pins> bxcan::FilterOwner for Can<CAN1, Pins> {
 }
 
 unsafe impl<Pins> bxcan::MasterInstance for Can<CAN1, Pins> {}
+
+#[cfg(feature = "stm32l496")]
+unsafe impl<Pins> bxcan::Instance for Can<crate::pac::CAN2, Pins> {
+    const REGISTERS: *mut bxcan::RegisterBlock = crate::pac::CAN2::ptr() as *mut _;
+}
+
+#[cfg(feature = "stm32l496")]
+unsafe impl<Pins> bxcan::FilterOwner for Can<crate::pac::CAN2, Pins> {
+    const NUM_FILTER_BANKS: u8 = 14;
+}
+
+#[cfg(feature = "stm32l496")]
+unsafe impl<Pins> bxcan::MasterInstance for Can<crate::pac::CAN2, Pins> {}

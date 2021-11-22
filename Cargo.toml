@@ -66,6 +66,7 @@ stm32l4x2 = ["stm32l4/stm32l4x2"]
 stm32l4x3 = ["stm32l4/stm32l4x3"]
 stm32l4x5 = ["stm32l4/stm32l4x5"]
 stm32l4x6 = ["stm32l4/stm32l4x6"]
+stm32l496 = ["stm32l4x6"]
 unproven = ["embedded-hal/unproven"]
 otg_fs = ["synopsys-usb-otg"]
 
