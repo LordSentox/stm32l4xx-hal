@@ -45,7 +45,7 @@ mod common_pins {
     }
 }
 
-#[cfg(feature = "stm32l496")]
+#[cfg(any(feature = "stm32l496", feature = "stm32l4a6"))]
 mod can2_pins {
     use crate::gpio::{
         gpiob::{PB12, PB13, PB5, PB6},
@@ -70,7 +70,7 @@ mod pb13_pb12_af10 {
 
 impl crate::can::sealed::Sealed for crate::pac::CAN1 {}
 
-#[cfg(feature = "stm32l496")]
+#[cfg(any(feature = "stm32l496", feature = "stm32l4a6"))]
 impl crate::can::sealed::Sealed for crate::pac::CAN2 {}
 
 /// Interface to the CAN peripheral.
@@ -101,21 +101,19 @@ unsafe impl<Pins> bxcan::Instance for Can<CAN1, Pins> {
     const REGISTERS: *mut bxcan::RegisterBlock = CAN1::ptr() as *mut _;
 }
 
+#[cfg(not(any(feature = "stm32l496", feature = "stm32l4a6")))]
 unsafe impl<Pins> bxcan::FilterOwner for Can<CAN1, Pins> {
     const NUM_FILTER_BANKS: u8 = 14;
 }
 
+#[cfg(any(feature = "stm32l496", feature = "stm32l4a6"))]
+unsafe impl<Pins> bxcan::FilterOwner for Can<CAN1, Pins> {
+    const NUM_FILTER_BANKS: u8 = 28;
+}
+
 unsafe impl<Pins> bxcan::MasterInstance for Can<CAN1, Pins> {}
 
-#[cfg(feature = "stm32l496")]
+#[cfg(any(feature = "stm32l496", feature = "stm32l4a6"))]
 unsafe impl<Pins> bxcan::Instance for Can<crate::pac::CAN2, Pins> {
     const REGISTERS: *mut bxcan::RegisterBlock = crate::pac::CAN2::ptr() as *mut _;
 }
-
-#[cfg(feature = "stm32l496")]
-unsafe impl<Pins> bxcan::FilterOwner for Can<crate::pac::CAN2, Pins> {
-    const NUM_FILTER_BANKS: u8 = 14;
-}
-
-#[cfg(feature = "stm32l496")]
-unsafe impl<Pins> bxcan::MasterInstance for Can<crate::pac::CAN2, Pins> {}
