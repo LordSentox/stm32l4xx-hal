@@ -1,5 +1,7 @@
 //! RTC peripheral abstraction
 
+use core::convert::TryInto;
+
 /// refer to AN4759 to compare features of RTC2 and RTC3
 #[cfg(not(any(
     feature = "stm32l412",
@@ -32,11 +34,10 @@ pub mod rtc3;
 ))]
 pub use rtc3 as rtc_registers;
 
-use fugit::ExtU32;
+use time::{Date, PrimitiveDateTime, Time};
 use void::Void;
 
 use crate::{
-    datetime::*,
     hal::timer::{self, Cancel as _},
     pwr,
     rcc::{APB1R1, BDCR},
@@ -157,6 +158,23 @@ impl RtcConfig {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[repr(u8)]
+pub enum RtcCalibrationCyclePeriod {
+    /// 8-second calibration period
+    Seconds8,
+    /// 16-second calibration period
+    Seconds16,
+    /// 32-second calibration period
+    Seconds32,
+}
+
+impl Default for RtcCalibrationCyclePeriod {
+    fn default() -> Self {
+        RtcCalibrationCyclePeriod::Seconds32
+    }
+}
+
 impl Rtc {
     pub fn rtc(
         rtc: RTC,
@@ -176,49 +194,51 @@ impl Rtc {
         rtc_struct
     }
 
-    /// Get date and time touple
-    pub fn get_date_time(&self) -> (Date, Time) {
-        let time;
-        let date;
-
-        let sync_p = self.rtc_config.sync_prescaler as u32;
-        let micros =
-            1_000_000u32 / (sync_p + 1) * (sync_p - self.rtc.ssr.read().ss().bits() as u32);
-        let timer = self.rtc.tr.read();
-        let cr = self.rtc.cr.read();
-
-        // Reading either RTC_SSR or RTC_TR locks the values in the higher-order
-        // calendar shadow registers until RTC_DR is read.
-        let dater = self.rtc.dr.read();
-
-        time = Time::new(
-            (bcd2_to_byte((timer.ht().bits(), timer.hu().bits())) as u32).hours(),
-            (bcd2_to_byte((timer.mnt().bits(), timer.mnu().bits())) as u32).minutes(),
-            (bcd2_to_byte((timer.st().bits(), timer.su().bits())) as u32).secs(),
-            micros.micros(),
-            cr.bkp().bit(),
-        );
-
-        date = Date::new(
-            dater.wdu().bits().into(),
-            bcd2_to_byte((dater.dt().bits(), dater.du().bits())).into(),
-            bcd2_to_byte((dater.mt().bit() as u8, dater.mu().bits())).into(),
-            (bcd2_to_byte((dater.yt().bits(), dater.yu().bits())) as u16 + 1970_u16).into(),
-        );
-
-        (date, time)
-    }
-
-    /// Set Date and Time
-    pub fn set_date_time(&mut self, date: Date, time: Time) {
+    /// Set date and time.
+    pub fn set_datetime(&mut self, datetime: &PrimitiveDateTime) {
         self.write(true, |rtc| {
-            set_time_raw(rtc, time);
-            set_date_raw(rtc, date);
+            set_time_raw(rtc, datetime.time());
+            set_date_raw(rtc, datetime.date());
         })
     }
 
+    /// Get date and time.
+    pub fn get_datetime(&self) -> PrimitiveDateTime {
+        let sync_p = self.rtc_config.sync_prescaler as u32;
+        let ssr = self.rtc.ssr.read();
+        let micro = 1_000_000u32 / (sync_p + 1) * (sync_p - ssr.ss().bits() as u32);
+        let tr = self.rtc.tr.read();
+        let second = bcd2_to_byte((tr.st().bits(), tr.su().bits()));
+        let minute = bcd2_to_byte((tr.mnt().bits(), tr.mnu().bits()));
+        let hour = bcd2_to_byte((tr.ht().bits(), tr.hu().bits()));
+        // Reading either RTC_SSR or RTC_TR locks the values in the higher-order
+        // calendar shadow registers until RTC_DR is read.
+        let dr = self.rtc.dr.read();
+
+        // let weekday = dr.wdu().bits();
+        let day = bcd2_to_byte((dr.dt().bits(), dr.du().bits()));
+        let month = bcd2_to_byte((dr.mt().bit() as u8, dr.mu().bits()));
+        let year = bcd2_to_byte((dr.yt().bits(), dr.yu().bits())) as u16 + 1970_u16;
+
+        let time = Time::from_hms_micro(hour, minute, second, micro).unwrap();
+        let date = Date::from_calendar_date(year.into(), month.try_into().unwrap(), day).unwrap();
+
+        date.with_time(time)
+    }
+
+    /// Check if daylight savings time is active.
+    pub fn get_daylight_savings(&self) -> bool {
+        let cr = self.rtc.cr.read();
+        cr.bkp().bit()
+    }
+
+    /// Enable/disable daylight savings time.
+    pub fn set_daylight_savings(&mut self, daylight_savings: bool) {
+        self.write(true, |rtc| set_daylight_savings_raw(rtc, daylight_savings))
+    }
+
     /// Set Time
-    /// Note: If setting both time and date, use set_date_time(...) to avoid errors.
+    /// Note: If setting both time and date, use set_datetime(...) to avoid errors.
     pub fn set_time(&mut self, time: Time) {
         self.write(true, |rtc| {
             set_time_raw(rtc, time);
@@ -226,7 +246,7 @@ impl Rtc {
     }
 
     /// Set Date
-    /// Note: If setting both time and date, use set_date_time(...) to avoid errors.
+    /// Note: If setting both time and date, use set_datetime(...) to avoid errors.
     pub fn set_date(&mut self, date: Date) {
         self.write(true, |rtc| {
             set_date_raw(rtc, date);
@@ -240,10 +260,10 @@ impl Rtc {
     /// Sets the time at which an alarm will be triggered
     /// This also clears the alarm flag if it is set
     pub fn set_alarm(&mut self, alarm: Alarm, date: Date, time: Time) {
-        let (dt, du) = byte_to_bcd2(date.date as u8);
-        let (ht, hu) = byte_to_bcd2(time.hours as u8);
-        let (mnt, mnu) = byte_to_bcd2(time.minutes as u8);
-        let (st, su) = byte_to_bcd2(time.seconds as u8);
+        let (dt, du) = byte_to_bcd2(date.day() as u8);
+        let (ht, hu) = byte_to_bcd2(time.hour() as u8);
+        let (mnt, mnu) = byte_to_bcd2(time.minute() as u8);
+        let (st, su) = byte_to_bcd2(time.second() as u8);
 
         self.write(false, |rtc| match alarm {
             Alarm::AlarmA => {
@@ -476,6 +496,71 @@ impl Rtc {
         self.rtc_config = rtc_config;
     }
 
+    const RTC_CALR_MIN_PPM: f32 = -487.1;
+    const RTC_CALR_MAX_PPM: f32 = 488.5;
+    const RTC_CALR_RESOLUTION_PPM: f32 = 0.9537;
+
+    /// Calibrate the clock drift.
+    ///
+    /// `clock_drift` can be adjusted from -487.1 ppm to 488.5 ppm and is clamped to this range.
+    ///
+    /// ### Note
+    ///
+    /// To perform a calibration when `async_prescaler` is less then 3, `sync_prescaler`
+    /// has to be reduced accordingly (see RM0351 Rev 9, sec 38.3.12).
+    pub fn calibrate(&mut self, mut clock_drift: f32, period: RtcCalibrationCyclePeriod) {
+        if clock_drift < Self::RTC_CALR_MIN_PPM {
+            clock_drift = Self::RTC_CALR_MIN_PPM;
+        } else if clock_drift > Self::RTC_CALR_MAX_PPM {
+            clock_drift = Self::RTC_CALR_MAX_PPM;
+        }
+
+        clock_drift = clock_drift / Self::RTC_CALR_RESOLUTION_PPM;
+
+        self.write(false, |rtc| {
+            rtc.calr.modify(|_, w| unsafe {
+                match period {
+                    RtcCalibrationCyclePeriod::Seconds8 => {
+                        w.calw8().set_bit().calw16().clear_bit();
+                    }
+                    RtcCalibrationCyclePeriod::Seconds16 => {
+                        w.calw8().clear_bit().calw16().set_bit();
+                    }
+                    RtcCalibrationCyclePeriod::Seconds32 => {
+                        w.calw8().clear_bit().calw16().clear_bit();
+                    }
+                }
+
+                // Extra pulses during calibration cycle period: CALP * 512 - CALM
+                //
+                // CALP sets whether pulses are added or omitted.
+                //
+                // CALM contains how many pulses (out of 512) are masked in a
+                // given calibration cycle period.
+                if clock_drift > 0.0 {
+                    // Maximum (about 512.2) rounds to 512.
+                    clock_drift += 0.5;
+
+                    // When the offset is positive (0 to 512), the opposite of
+                    // the offset (512 - offset) is masked, i.e. for the
+                    // maximum offset (512), 0 pulses are masked.
+                    w.calp().set_bit().calm().bits(512 - clock_drift as u16)
+                } else {
+                    // Minimum (about -510.7) rounds to -511.
+                    clock_drift -= 0.5;
+
+                    // When the offset is negative or zero (-511 to 0),
+                    // the absolute offset is masked, i.e. for the minimum
+                    // offset (-511), 511 pulses are masked.
+                    w.calp()
+                        .clear_bit()
+                        .calm()
+                        .bits((clock_drift * -1.0) as u16)
+                }
+            });
+        })
+    }
+
     /// Access the wakeup timer
     pub fn wakeup_timer(&mut self) -> WakeupTimer {
         WakeupTimer { rtc: self }
@@ -652,9 +737,9 @@ impl timer::Cancel for WakeupTimer<'_> {
 /// Raw set time
 /// Expects init mode enabled and write protection disabled
 fn set_time_raw(rtc: &RTC, time: Time) {
-    let (ht, hu) = byte_to_bcd2(time.hours as u8);
-    let (mnt, mnu) = byte_to_bcd2(time.minutes as u8);
-    let (st, su) = byte_to_bcd2(time.seconds as u8);
+    let (ht, hu) = byte_to_bcd2(time.hour() as u8);
+    let (mnt, mnu) = byte_to_bcd2(time.minute() as u8);
+    let (st, su) = byte_to_bcd2(time.second() as u8);
 
     rtc.tr.write(|w| unsafe {
         w.ht()
@@ -672,16 +757,18 @@ fn set_time_raw(rtc: &RTC, time: Time) {
             .pm()
             .clear_bit()
     });
+}
 
-    rtc.cr.modify(|_, w| w.bkp().bit(time.daylight_savings));
+fn set_daylight_savings_raw(rtc: &RTC, daylight_savings: bool) {
+    rtc.cr.modify(|_, w| w.bkp().bit(daylight_savings));
 }
 
 /// Raw set date
 /// Expects init mode enabled and write protection disabled
 fn set_date_raw(rtc: &RTC, date: Date) {
-    let (dt, du) = byte_to_bcd2(date.date as u8);
-    let (mt, mu) = byte_to_bcd2(date.month as u8);
-    let yr = date.year as u16;
+    let (dt, du) = byte_to_bcd2(date.day() as u8);
+    let (mt, mu) = byte_to_bcd2(date.month() as u8);
+    let yr = date.year() as u16;
     let yr_offset = (yr - 1970_u16) as u8;
     let (yt, yu) = byte_to_bcd2(yr_offset);
 
@@ -699,7 +786,7 @@ fn set_date_raw(rtc: &RTC, date: Date) {
             .yu()
             .bits(yu)
             .wdu()
-            .bits(date.day as u8)
+            .bits(date.weekday().number_from_monday() as u8)
     });
 }
 

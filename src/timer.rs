@@ -1,13 +1,14 @@
 //! Timers
 
-use crate::hal::timer::{CountDown, Periodic};
-// missing PAC support
-/*
+use core::convert::Infallible;
+
+use crate::hal::timer::{Cancel, CountDown, Periodic};
+
 #[cfg(any(
-    feature = "stm32l451",
+    // feature = "stm32l451",
     feature = "stm32l452",
     feature = "stm32l462",
-    feature = "stm32l471",
+    // feature = "stm32l471",
     feature = "stm32l475",
     feature = "stm32l476",
     feature = "stm32l485",
@@ -20,11 +21,11 @@ use crate::hal::timer::{CountDown, Periodic};
     // feature = "stm32l4s5",
     // feature = "stm32l4r7",
     // feature = "stm32l4s7",
-    feature = "stm32l4r9",
-    feature = "stm32l4s9",
+    // feature = "stm32l4r9",
+    // feature = "stm32l4s9",
 ))]
 use crate::stm32::TIM3;
-*/
+
 #[cfg(not(any(
     feature = "stm32l412",
     feature = "stm32l422",
@@ -68,7 +69,7 @@ use fugit::RateExtU32;
 
 /// Hardware timers
 pub struct Timer<TIM> {
-    clocks: Clocks,
+    clock: Hertz,
     tim: TIM,
     timeout: Hertz,
 }
@@ -80,7 +81,7 @@ pub enum Event {
 }
 
 macro_rules! hal {
-    ($($TIM:ident: ($tim:ident, $frname:ident, $apb:ident, $width:ident),)+) => {
+    ($($TIM:ident: ($tim:ident, $frname:ident, $apb:ident, $width:ident, $timclk:ident),)+) => {
         $(
             impl Periodic for Timer<$TIM> {}
 
@@ -88,17 +89,16 @@ macro_rules! hal {
                 type Time = Hertz;
 
                 // NOTE(allow) `w.psc().bits()` is safe for TIM{6,7} but not for TIM{2,3,4} due to
-                // some SVD omission
+                // some SVD omission.
                 #[allow(unused_unsafe)]
                 fn start<T>(&mut self, timeout: T)
                 where
                     T: Into<Hertz>,
                 {
-                    // pause
-                    self.tim.cr1.modify(|_, w| w.cen().clear_bit());
+                    self.pause();
 
                     self.timeout = timeout.into();
-                    let ticks = self.clocks.pclk1() / self.timeout; // TODO check pclk that timer is on
+                    let ticks = self.clock / self.timeout; // TODO check pclk that timer is on
                     let psc = u16((ticks - 1) / (1 << 16)).unwrap();
 
                     self.tim.psc.write(|w| unsafe { w.psc().bits(psc) });
@@ -107,14 +107,15 @@ macro_rules! hal {
 
                     self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
 
-                    // Trigger an update event to load the prescaler value to the clock
+                    // Trigger an update event to load the prescaler value to the clock.
                     self.tim.egr.write(|w| w.ug().set_bit());
+
                     // The above line raises an update event which will indicate
                     // that the timer is already finished. Since this is not the case,
-                    // it should be cleared
+                    // it should be cleared.
                     self.clear_update_interrupt_flag();
 
-                    // start counter
+                    // Start counter.
                     self.tim.cr1.modify(|_, w| w.cen().set_bit());
                 }
 
@@ -128,6 +129,17 @@ macro_rules! hal {
                 }
             }
 
+            impl Cancel for Timer<$TIM> {
+                type Error = Infallible;
+
+                fn cancel(&mut self) -> Result<(), Self::Error> {
+                    self.pause();
+                    self.reset();
+
+                    Ok(())
+                }
+            }
+
             impl Timer<$TIM> {
                 // XXX(why not name this `new`?) bummer: constructors need to have different names
                 // even if the `$TIM` are non overlapping (compare to the `free` function below
@@ -138,8 +150,10 @@ macro_rules! hal {
                     <$TIM>::enable(apb);
                     <$TIM>::reset(apb);
 
+                    let clock = clocks.$timclk();
+
                     let mut timer = Timer {
-                        clocks,
+                        clock,
                         tim,
                         timeout: 0.Hz(),
                     };
@@ -161,9 +175,11 @@ macro_rules! hal {
                     <$TIM>::enable(apb);
                     <$TIM>::reset(apb);
 
-                    let psc = clocks.pclk1() / frequency - 1;
+                    let clock = clocks.$timclk();
 
-                    debug_assert!(clocks.pclk1() >= frequency);
+                    let psc = clock / frequency - 1;
+
+                    debug_assert!(clock >= frequency);
                     debug_assert!(frequency.raw() > 0);
                     debug_assert!(psc <= core::u16::MAX.into());
 
@@ -171,7 +187,7 @@ macro_rules! hal {
                     let max = core::$width::MAX;
                     tim.arr.write(|w| unsafe { w.bits(max.into()) });
 
-                    // Trigger an update event to load the prescaler value to the clock
+                    // Trigger an update event to load the prescaler value to the clock.
                     tim.egr.write(|w| w.ug().set_bit());
 
 
@@ -180,7 +196,7 @@ macro_rules! hal {
                     // it should be cleared
                     tim.sr.modify(|_, w| w.uif().clear_bit());
 
-                    // start counter
+                    // Start counter.
                     tim.cr1.modify(|_, w| {
                         w.cen().set_bit();
 
@@ -194,7 +210,7 @@ macro_rules! hal {
                     });
 
                     Timer {
-                        clocks,
+                        clock,
                         tim,
                         timeout: frequency,
                     }
@@ -204,17 +220,16 @@ macro_rules! hal {
                 pub fn listen(&mut self, event: Event) {
                     match event {
                         Event::TimeOut => {
-                            // Enable update event interrupt
+                            // Enable update event interrupt.
                             self.tim.dier.write(|w| w.uie().set_bit());
                         }
                     }
                 }
 
-
                 /// Clears interrupt associated with `event`.
                 ///
-                /// If the interrupt is not cleared, it will immediately retrigger after
-                /// the ISR has finished.
+                /// If the interrupt is not cleared, it will immediately
+                /// retrigger after the ISR has finished.
                 pub fn clear_interrupt(&mut self, event: Event) {
                     match event {
                         Event::TimeOut => {
@@ -224,8 +239,7 @@ macro_rules! hal {
                     }
                 }
 
-
-                /// Stops listening for an `event`
+                /// Stops listening for an `event`.
                 pub fn unlisten(&mut self, event: Event) {
                     match event {
                         Event::TimeOut => {
@@ -235,7 +249,7 @@ macro_rules! hal {
                     }
                 }
 
-                /// Clears Update Interrupt Flag
+                /// Clear the update interrupt flag.
                 pub fn clear_update_interrupt_flag(&mut self) {
                     self.tim.sr.modify(|_, w| w.uif().clear_bit());
                 }
@@ -246,10 +260,19 @@ macro_rules! hal {
                     cnt.cnt().bits()
                 }
 
-                /// Releases the TIM peripheral
-                pub fn free(self) -> $TIM {
-                    // pause counter
+                /// Pause the counter.
+                pub fn pause(&mut self) {
                     self.tim.cr1.modify(|_, w| w.cen().clear_bit());
+                }
+
+                /// Reset the counter.
+                pub fn reset(&mut self) {
+                    self.tim.cnt.modify(|_, w| unsafe { w.bits(0) });
+                }
+
+                /// Releases the TIM peripheral.
+                pub fn free(mut self) -> $TIM {
+                    self.pause();
                     self.tim
                 }
             }
@@ -258,21 +281,18 @@ macro_rules! hal {
 }
 
 hal! {
-    TIM2:  (tim2, free_running_tim2, APB1R1, u32),
-    TIM6:  (tim6, free_running_tim6, APB1R1, u16),
-    //TIM7:  (tim7, free_running_tim7, APB1R1, u16),
-    TIM15: (tim15, free_running_tim15, APB2, u16),
-    TIM16: (tim16, free_running_tim16, APB2, u16),
+    TIM2:  (tim2, free_running_tim2, APB1R1, u32, timclk1),
+    TIM6:  (tim6, free_running_tim6, APB1R1, u16, timclk1),
+    //TIM7:  (tim7, free_running_tim7, APB1R1, u16, timclk1),
+    TIM15: (tim15, free_running_tim15, APB2, u16, timclk2),
+    TIM16: (tim16, free_running_tim16, APB2, u16, timclk2),
 }
 
-// missing PAC support
-// RCC_APB1RSTR1->TIM3RST not defined
-/*
 #[cfg(any(
-    feature = "stm32l451",
+    // feature = "stm32l451",
     feature = "stm32l452",
     feature = "stm32l462",
-    feature = "stm32l471",
+    // feature = "stm32l471",
     feature = "stm32l475",
     feature = "stm32l476",
     feature = "stm32l485",
@@ -285,13 +305,12 @@ hal! {
     // feature = "stm32l4s5",
     // feature = "stm32l4r7",
     // feature = "stm32l4s7",
-    feature = "stm32l4r9",
-    feature = "stm32l4s9",
+    // feature = "stm32l4r9",
+    // feature = "stm32l4s9",
 ))]
 hal! {
-    TIM3:  (tim3, free_running_tim3, tim3en, tim3rst, APB1R1, u32),
+    TIM3:  (tim3, free_running_tim3, APB1R1, u16, timclk1),
 }
-*/
 
 #[cfg(not(any(
     feature = "stm32l412",
@@ -301,7 +320,7 @@ hal! {
     feature = "stm32l462",
 )))]
 hal! {
-    TIM7:  (tim7, free_running_tim7, APB1R1, u16),
+    TIM7:  (tim7, free_running_tim7, APB1R1, u16, timclk1),
 }
 
 #[cfg(any(
@@ -317,11 +336,11 @@ hal! {
     // feature = "stm32l4s5",
     // feature = "stm32l4r7",
     // feature = "stm32l4s7",
-    feature = "stm32l4r9",
-    feature = "stm32l4s9",
+    // feature = "stm32l4r9",
+    // feature = "stm32l4s9",
 ))]
 hal! {
-    TIM4:  (tim4, free_running_tim4, APB1R1, u16),
-    TIM5:  (tim5, free_running_tim5, APB1R1, u32),
-    TIM17: (tim17, free_running_tim17, APB2, u16),
+    TIM4:  (tim4, free_running_tim4, APB1R1, u16, timclk1),
+    TIM5:  (tim5, free_running_tim5, APB1R1, u32, timclk1),
+    TIM17: (tim17, free_running_tim17, APB2, u16, timclk2),
 }
