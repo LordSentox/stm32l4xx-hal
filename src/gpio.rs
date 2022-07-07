@@ -5,7 +5,7 @@ use crate::hal::digital::v2::{InputPin, OutputPin, StatefulOutputPin, Toggleable
 use core::convert::Infallible;
 use core::marker::PhantomData;
 
-use crate::pac::{self, EXTI, SYSCFG};
+use crate::pac::{self, Interrupt, EXTI, SYSCFG};
 use crate::rcc::{Enable, AHB2, APB2};
 
 mod convert;
@@ -96,6 +96,7 @@ pub trait ExtiPin {
     fn disable_interrupt(&mut self, exti: &mut EXTI);
     fn clear_interrupt_pending_bit(&mut self);
     fn check_interrupt(&self) -> bool;
+    fn interrupt(&self) -> Interrupt;
 }
 
 impl<PIN> ExtiPin for PIN
@@ -187,6 +188,20 @@ where
     #[inline(always)]
     fn check_interrupt(&self) -> bool {
         unsafe { ((*EXTI::ptr()).pr1.read().bits() & (1 << self.pin_id())) != 0 }
+    }
+
+    /// Get the `Interrupt` for this pin.
+    fn interrupt(&self) -> Interrupt {
+        match self.pin_id() {
+            0 => Interrupt::EXTI0,
+            1 => Interrupt::EXTI1,
+            2 => Interrupt::EXTI2,
+            3 => Interrupt::EXTI3,
+            4 => Interrupt::EXTI4,
+            5..=9 => Interrupt::EXTI9_5,
+            10..=15 => Interrupt::EXTI15_10,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -775,6 +790,42 @@ gpio!(GPIOG, gpiog, PGx, 'G', 6,
     PG15: (pg15, 15, Analog, H8, exticr4),
 ]);
 
+#[cfg(any(
+  // feature = "stm32l471",  // missing PAC support for Port H
+  feature = "stm32l475",
+  feature = "stm32l476",
+  feature = "stm32l485",
+  feature = "stm32l486",
+  feature = "stm32l496",
+  feature = "stm32l4a6",
+  // feature = "stm32l4p5",
+  // feature = "stm32l4q5",
+  // feature = "stm32l4r5",
+  // feature = "stm32l4s5",
+  // feature = "stm32l4r7",
+  // feature = "stm32l4s7",
+  feature = "stm32l4r9",
+  feature = "stm32l4s9",
+))]
+gpio!(GPIOH, gpioh, PHx, 'H', 7, [
+    PH0: (ph0, 0, Analog, L8, exticr1),
+    PH1: (ph1, 1, Analog, L8, exticr1),
+    PH2: (ph2, 2, Analog, L8, exticr1),
+    PH3: (ph3, 3, Analog, L8, exticr1),
+    PH4: (ph4, 4, Analog, L8, exticr2),
+    PH5: (ph5, 5, Analog, L8, exticr2),
+    PH6: (ph6, 6, Analog, L8, exticr2),
+    PH7: (ph7, 7, Analog, L8, exticr2),
+    PH8: (ph8, 8, Analog, H8, exticr3),
+    PH9: (ph9, 9, Analog, H8, exticr3),
+    PH10: (ph10, 10, Analog, H8, exticr3),
+    PH11: (ph11, 11, Analog, H8, exticr3),
+    PH12: (ph12, 12, Analog, H8, exticr4),
+    PH13: (ph13, 13, Analog, H8, exticr4),
+    PH14: (ph14, 14, Analog, H8, exticr4),
+    PH15: (ph15, 15, Analog, H8, exticr4),
+]);
+
 struct Gpio<const P: char>;
 impl<const P: char> Gpio<P> {
     const fn ptr() -> *const crate::pac::gpioa::RegisterBlock {
@@ -820,7 +871,25 @@ impl<const P: char> Gpio<P> {
                 feature = "stm32l4s9",
             ))]
             'G' => crate::pac::GPIOG::ptr() as _,
-            _ => crate::pac::GPIOA::ptr(),
+            #[cfg(any(
+              // feature = "stm32l471",  // missing PAC support for Port G
+              feature = "stm32l475",
+              feature = "stm32l476",
+              feature = "stm32l485",
+              feature = "stm32l486",
+              feature = "stm32l496",
+              feature = "stm32l4a6",
+              // feature = "stm32l4p5",
+              // feature = "stm32l4q5",
+              // feature = "stm32l4r5",
+              // feature = "stm32l4s5",
+              // feature = "stm32l4r7",
+              // feature = "stm32l4s7",
+              feature = "stm32l4r9",
+              feature = "stm32l4s9",
+            ))]
+            'H' => crate::pac::GPIOH::ptr() as _,
+            _ => core::ptr::null(),
         }
     }
 }
