@@ -74,12 +74,14 @@ impl HclkConfig {
         Self { freq }
     }
 
-    pub fn freeze(self, sysclk_freq: Hertz, rcc: &RegisterBlock) -> Hertz {
+    pub fn freq(&self) -> Hertz {
+        self.freq
+    }
+
+    pub fn freeze(self, sysclk_freq: Hertz, rcc: &RegisterBlock) {
         let divider = HclkDivider::from_ratio(sysclk_freq, self.freq);
 
         rcc.cfgr
             .modify(|_, w| unsafe { w.hpre().bits(divider.bits()) });
-
-        self.freq
     }
 }

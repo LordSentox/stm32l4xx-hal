@@ -144,11 +144,14 @@ impl CFGR {
         self.setup_hsi16(rcc, &mut clocks);
         self.setup_pll(rcc, &mut clocks);
 
-        let sysclk_speed = self.setup_sysclk(rcc, &mut clocks);
-        let hclk_speed = self.setup_hclk(rcc, sysclk_speed, &mut clocks);
+        let sysclk = self.create_sysclk_config();
+        let hclk = self.create_hclk_config(&sysclk);
 
-        self.setup_periph_clocks(rcc, hclk_speed, &mut clocks);
-        self.adjust_flash_wait_states(acr, hclk_speed);
+        self.setup_periph_clocks(rcc, &hclk, &mut clocks);
+        self.adjust_flash_wait_states(acr, &hclk);
+
+        self.setup_sysclk(&sysclk, rcc, &mut clocks);
+        self.setup_hclk(rcc, &hclk, &sysclk, &mut clocks);
 
         self.clean_msi(rcc);
 
@@ -238,29 +241,20 @@ impl CFGR {
         }
     }
 
-    fn setup_sysclk(&self, rcc: &RegisterBlock, clocks: &mut Clocks) -> Hertz {
+    fn create_sysclk_config(&self) -> SysclkConfig {
         if let Some(sysclk) = &self.sysclk {
-            self.setup_sysclk_(sysclk, rcc, clocks)
+            sysclk.clone()
         } else if let Some(msi) = self.msi {
             // Use MSI as default, as per standard
-            self.setup_sysclk_(
-                &SysclkConfig {
-                    speed: msi.to_hertz(),
-                    source_clock: SysclkSource::MSI,
-                },
-                rcc,
-                clocks,
-            )
+            SysclkConfig {
+                speed: msi.to_hertz(),
+                source_clock: SysclkSource::MSI,
+            }
         } else {
             panic!("No SYSCLK configuration has been provided and MSI has not been enabled, which is the fallback. Please provide either");
         }
     }
-    fn setup_sysclk_(
-        &self,
-        config: &SysclkConfig,
-        rcc: &RegisterBlock,
-        clocks: &mut Clocks,
-    ) -> Hertz {
+    fn setup_sysclk(&self, config: &SysclkConfig, rcc: &RegisterBlock, clocks: &mut Clocks) {
         // Check that the speed we want is the speed we actually get from our source clock
         let source_speed = match config.source_clock {
             SysclkSource::HSE => self
@@ -294,21 +288,28 @@ impl CFGR {
         while rcc.cfgr.read().sws().bits() != config.source_clock as u8 {}
 
         clocks.sysclk = config.speed;
-        clocks.sysclk
     }
 
-    fn setup_hclk(&self, rcc: &RegisterBlock, sysclk: Hertz, clocks: &mut Clocks) -> Hertz {
+    fn create_hclk_config(&self, sysclk_config: &SysclkConfig) -> HclkConfig {
         // Use the requested configuration or a sane default for HCLK.
-        let hclk_config = match self.hclk {
+        match self.hclk {
             Some(config) => config,
-            None => HclkConfig::new(sysclk), // Same speed as the SYSCLK
-        };
-
-        clocks.hclk = hclk_config.freeze(clocks.sysclk, rcc);
-        clocks.hclk
+            None => HclkConfig::new(sysclk_config.speed), // Same speed as the SYSCLK
+        }
     }
 
-    fn setup_periph_clocks(&self, rcc: &RegisterBlock, hclk: Hertz, clocks: &mut Clocks) {
+    fn setup_hclk(
+        &self,
+        rcc: &RegisterBlock,
+        hclk: &HclkConfig,
+        sysclk: &SysclkConfig,
+        clocks: &mut Clocks,
+    ) {
+        clocks.hclk = hclk.freq();
+        hclk.freeze(sysclk.speed, rcc);
+    }
+
+    fn setup_periph_clocks(&self, rcc: &RegisterBlock, hclk: &HclkConfig, clocks: &mut Clocks) {
         // Use the PCLK configurations or default to the same as HCLK
         let pclk1_config = match self.pclk1 {
             Some(config) => config,
@@ -319,11 +320,12 @@ impl CFGR {
             None => Pclk2Config::new(clocks.hclk),
         };
 
-        (clocks.pclk1, clocks.timclk1) = pclk1_config.freeze(hclk, rcc);
-        (clocks.pclk2, clocks.timclk2) = pclk2_config.freeze(hclk, rcc);
+        (clocks.pclk1, clocks.timclk1) = pclk1_config.freeze(hclk.freq(), rcc);
+        (clocks.pclk2, clocks.timclk2) = pclk2_config.freeze(hclk.freq(), rcc);
     }
 
-    fn adjust_flash_wait_states(&self, acr: &mut ACR, hclk: Hertz) {
+    fn adjust_flash_wait_states(&self, acr: &mut ACR, hclk: &HclkConfig) {
+        let hclk = hclk.freq();
         let latency_bits = if hclk.raw() <= 16_000_000 {
             0b000
         } else if hclk.raw() <= 32_000_000 {

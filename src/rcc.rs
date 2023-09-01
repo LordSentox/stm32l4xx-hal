@@ -280,7 +280,7 @@ pub enum ClockSecuritySystem {
     Disable,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SysclkConfig {
     pub speed: Hertz,
     pub source_clock: SysclkSource,
