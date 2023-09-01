@@ -313,11 +313,11 @@ impl CFGR {
         // Use the PCLK configurations or default to the same as HCLK
         let pclk1_config = match self.pclk1 {
             Some(config) => config,
-            None => Pclk1Config::new(clocks.hclk),
+            None => Pclk1Config::new(hclk.freq()),
         };
         let pclk2_config = match self.pclk2 {
             Some(config) => config,
-            None => Pclk2Config::new(clocks.hclk),
+            None => Pclk2Config::new(hclk.freq()),
         };
 
         (clocks.pclk1, clocks.timclk1) = pclk1_config.freeze(hclk.freq(), rcc);
