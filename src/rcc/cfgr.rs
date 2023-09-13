@@ -138,7 +138,6 @@ impl CFGR {
         let mut clocks = Clocks::default();
         self.setup_lsi(rcc, &mut clocks);
         self.setup_lse(rcc, pwr, &mut clocks);
-        self.configure_msi(rcc, &mut clocks);
         self.setup_hse(rcc, &mut clocks);
         self.setup_hsi48(rcc, &mut clocks);
         self.setup_hsi16(rcc, &mut clocks);
@@ -149,6 +148,8 @@ impl CFGR {
 
         self.setup_periph_clocks(rcc, &hclk, &mut clocks);
         self.adjust_flash_wait_states(acr, &hclk);
+
+        self.configure_msi(rcc, &mut clocks);
 
         self.setup_sysclk(&sysclk, rcc, &mut clocks);
         self.setup_hclk(rcc, &hclk, &sysclk, &mut clocks);
